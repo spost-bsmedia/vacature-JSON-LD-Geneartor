@@ -47,10 +47,27 @@ export default function App() {
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [vacatureUrl, setVacatureUrl] = useState<string>("https://www.werkenbijkoopmaninternational.com/");
 
+  // Client-side API fallback options for Netlify / Gh-Pages
+  const [useClientSideApi, setUseClientSideApi] = useState<boolean>(() => {
+    return localStorage.getItem("use_client_side_api") === "true";
+  });
+  const [clientApiKey, setClientApiKey] = useState<string>(() => {
+    return localStorage.getItem("client_gemini_api_key") || "";
+  });
+
   // Target date for generation (defaults to today)
   const [customDate, setCustomDate] = useState<string>(() => {
     return new Date().toISOString().split("T")[0];
   });
+
+  // Save client-side api config to localStorage
+  useEffect(() => {
+    localStorage.setItem("use_client_side_api", String(useClientSideApi));
+  }, [useClientSideApi]);
+
+  useEffect(() => {
+    localStorage.setItem("client_gemini_api_key", clientApiKey);
+  }, [clientApiKey]);
 
   // Load history on mount
   useEffect(() => {
@@ -103,7 +120,7 @@ export default function App() {
   // call proxy endpoint to generate schema via Gemini
   const handleGenerate = async () => {
     if (!jobText.trim()) {
-      setError("Voer a.ub. eerst een vacaturetekst in.");
+      setError("Voer a.u.b. eerst een vacaturetekst in.");
       triggerToast("Voer eerst een vacaturetekst in.", "error");
       return;
     }
@@ -111,6 +128,144 @@ export default function App() {
     setIsGenerating(true);
     setError(null);
 
+    // Direct Client-Side Gemini Call Mode (Supports Netlify, Vercel, GH Pages without backend)
+    if (useClientSideApi) {
+      if (!clientApiKey.trim()) {
+        setIsGenerating(false);
+        setError("Schakel 'Client-side modus' in en vul hieronder je eigen Gemini API sleutel in.");
+        triggerToast("Geen API Key ingesteld!", "error");
+        return;
+      }
+
+      try {
+        const todayStr = customDate || new Date().toISOString().split("T")[0];
+        const promptText = `Je krijgt een vacaturetekst in het Nederlands of Engels. Je taak is om alle relevante velden te extraheren voor de Google JobPosting structured data (JSON-LD) specificatie.
+Wees zeer nauwkeurig en behoud details uit de tekst.
+
+Huidige datum vandaag: ${todayStr}
+
+Extraction Instructies:
+1. "title": De exacte functietitel.
+2. "company": De naam van de werkgever/organisatie. Zoek goed in de tekst (bijvoorbeeld 'Koopman International', 'Amsterdam', etc.).
+3. "descriptionHtml": Een volledige, goed leesbare omschrijving geformatteerd in HTML. Gebruik uitsluitend veilige tags die Google accepteert voor JobPosting descriptions: <p>, <ul>, <li>, <strong>, <em>, <br>. Behoud alle belangrijke onderdelen zoals taken, vereisten en wat de werkgever biedt.
+4. "employmentTypes": Een lijst van dienstverband typen. Selecteer uitsluitend uit: FULL_TIME, PART_TIME, CONTRACTOR, TEMPORARY, INTERN, VOLUNTEER, OTHER. Match zorgvuldig (bijv. "Fulltime" -> FULL_TIME, "Parttime" -> PART_TIME).
+5. "locality": De stad of plaatsnaam waar de functie is gevestigd (bijv. "Amsterdam", "Emmeloord").
+6. "region": De provincie of regio indien bekend (bijv. "Flevoland", "Noord-Holland"), anders leeg laten.
+7. "postalCode": Postcode indien expliciet genoemd, anders leeg laten.
+8. "streetAddress": Straatnaam en huisnummer indien vermeld, anders leeg laten.
+9. "countryCode": De ISO 2-letter landcode (bijv. "NL", "BE"). Standaard is "NL" voor Nederlandse vacatures tenzij anders aangegeven.
+10. "remoteType": Indien er sprake is van thuiswerk, kies uit: ONSITE (standaard), HYBRID of REMOTE.
+11. "salaryMinimum": Het minimum salaris als getal (bijvoorbeeld 2500 voor €2500 per maand uur of jaar), anders 0.
+12. "salaryMaximum": Het maximum salaris als getal, anders 0.
+13. "salaryCurrency": De valuta, bijvoorbeeld "EUR" of "USD". Standaard is "EUR".
+14. "salaryUnit": De frequentie van betaling: HOUR, WEEK, MONTH, of YEAR. Standaard is MONTH.
+15. "datePosted": De publicatiedatum in YYYY-MM-DD. Gebruik de huidige datum "${todayStr}" als de publicatiedatum niet expliciet in de tekst staat.
+16. "validThrough": De vervaldatum van de vacature in YYYY-MM-DD. Als deze niet is vermeld, kies dan een logische datum precies 90 dagen na datePosted.
+
+Vacaturetekst:
+"""
+${jobText}
+"""`;
+
+        // Direct request to Gemini REST API
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${clientApiKey.trim()}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  title: { type: "STRING" },
+                  company: { type: "STRING" },
+                  descriptionHtml: { type: "STRING" },
+                  employmentTypes: {
+                    type: "ARRAY",
+                    items: { type: "STRING" }
+                  },
+                  locality: { type: "STRING" },
+                  region: { type: "STRING" },
+                  postalCode: { type: "STRING" },
+                  streetAddress: { type: "STRING" },
+                  countryCode: { type: "STRING" },
+                  remoteType: { type: "STRING" },
+                  salaryMinimum: { type: "NUMBER" },
+                  salaryMaximum: { type: "NUMBER" },
+                  salaryCurrency: { type: "STRING" },
+                  salaryUnit: { type: "STRING" },
+                  datePosted: { type: "STRING" },
+                  validThrough: { type: "STRING" }
+                },
+                required: ["title", "company", "descriptionHtml", "employmentTypes", "locality", "countryCode", "datePosted", "validThrough"]
+              }
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData?.error?.message || `API Fout ${response.status}`);
+        }
+
+        const dataJson = await response.json();
+        const textOutput = dataJson.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!textOutput) {
+          throw new Error("Geen geldig antwoord ontvangen van de Gemini API.");
+        }
+
+        const parsedData: JobStructuredData = JSON.parse(textOutput.trim());
+
+        // Standard post-processing (Koopman fields & location mappings)
+        if (!parsedData.company || parsedData.company.toLowerCase().includes("koopman")) {
+          parsedData.company = "Koopman International";
+        }
+
+        const loc = (parsedData.locality || "").toLowerCase();
+        if (loc.includes("emmeloord")) {
+          parsedData.locality = "Emmeloord";
+          parsedData.streetAddress = "Ecu 6";
+          parsedData.postalCode = "8305 BA";
+          parsedData.region = "Flevoland";
+        } else if (loc.includes("amsterdam")) {
+          parsedData.locality = "Amsterdam";
+          parsedData.streetAddress = "Distelweg 88";
+          parsedData.postalCode = "1031 HH";
+          parsedData.region = "Noord-Holland";
+        }
+
+        if (vacatureUrl && vacatureUrl.trim()) {
+          parsedData.url = vacatureUrl.trim();
+        }
+
+        setGeneratedData(parsedData);
+        setActiveTab("json");
+        triggerToast("JobPosting JSON-LD succesvol gegenereerd via client-side API!", "success");
+
+        const newItem: HistoryItem = {
+          id: `hist-${Date.now()}`,
+          title: parsedData.title || "Onbekende functie",
+          company: parsedData.company || "Onbekend bedrijf",
+          dateGenerated: new Date().toLocaleString("nl-NL"),
+          data: parsedData
+        };
+        const updatedHistory = [newItem, ...history.slice(0, 19)];
+        saveHistory(updatedHistory);
+
+      } catch (err: any) {
+        console.error("Direct client API error:", err);
+        setError(`Client-side generatie mislukt: ${err.message}. Controleer of je API-sleutel correct is.`);
+        triggerToast("Fout bij direct online genereren", "error");
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
+
+    // Default Express Full-stack Server Call Mode
     try {
       const response = await fetch("/api/generate-jsonld", {
         method: "POST",
@@ -172,7 +327,15 @@ export default function App() {
 
     } catch (err: any) {
       console.error("Fout bij genereren:", err);
-      setError(err.message || "Er is een onverwachte fout opgetreden.");
+      let errMsg = err.message || "Er is een onverwachte fout opgetreden.";
+      
+      // Auto-diagnose Netlify / Vercel static asset deployment restriction
+      if (errMsg.includes("404") || errMsg.includes("Failed to fetch") || errMsg.includes("Server fout 404")) {
+        errMsg = "Je backend server is momenteel niet bereikbaar (404). Omdat je de app op Netlify of een vergelijkbaar statisch platform hebt gehost, raden we aan om direct hieronder 'Netlify / Client-side modus' in te schakelen en je eigen Gemini API-sleutel in te vullen.";
+        triggerToast("Netlify / Statische host gedetecteerd", "info");
+      }
+      
+      setError(errMsg);
       triggerToast("Genereren mislukt, probeer het opnieuw.", "error");
     } finally {
       setIsGenerating(false);
@@ -453,6 +616,56 @@ export default function App() {
                   Google Jobs Indexer
                 </div>
               </div>
+            </div>
+
+            {/* Netlify / Static Host Fallback Option */}
+            <div className="border border-white/10 rounded-xl p-3.5 bg-slate-900/40 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-bold text-slate-200">Netlify of GitHub Pages modus?</span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer"
+                    checked={useClientSideApi}
+                    onChange={(e) => setUseClientSideApi(e.target.checked)}
+                  />
+                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500"></div>
+                </label>
+              </div>
+
+              {useClientSideApi && (
+                <div className="space-y-2.5 pt-2.5 border-t border-white/5 animate-fadeIn">
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Omdat je de app op Netlify of GitHub Pages host als pure statische site, is de ingebouwde Node/Express-backend niet beschikbaar. Vul hieronder je eigen Gemini API Key in om direct vanuit de browser te genereren.
+                  </p>
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">
+                      Je eigen Google Gemini API Key:
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="AIzaSy..."
+                      value={clientApiKey}
+                      onChange={(e) => setClientApiKey(e.target.value)}
+                      className="w-full bg-slate-950/60 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
+                    />
+                  </div>
+                  <div className="text-[10px] text-slate-500 leading-relaxed">
+                    Je sleutel wordt veilig opgeslagen in de <code>localStorage</code> van je browser en nooit gedeeld of geüpload. 
+                    <a 
+                      href="https://aistudio.google.com/" 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="text-cyan-400 hover:underline inline-flex items-center gap-1 ml-1"
+                    >
+                      Krijg hier een gratis sleutel <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Trigger Button */}
