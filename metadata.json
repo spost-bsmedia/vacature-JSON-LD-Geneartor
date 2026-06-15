@@ -1,0 +1,6 @@
+{
+  "name": "Vacature JSON-LD Generator",
+  "description": "Genereer direct optimale Google JobPosting JSON-LD structured data met AI op basis van vacatureteksten.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
