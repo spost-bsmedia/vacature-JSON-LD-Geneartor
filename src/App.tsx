@@ -50,12 +50,15 @@ export default function App() {
   // Client-side API fallback options for Netlify / Gh-Pages
   const [useClientSideApi, setUseClientSideApi] = useState<boolean>(() => {
     const hasEnvKey = !!(import.meta.env.VITE_GEMINI_API_KEY);
+    if (hasEnvKey) return true; // Always active if environment key is provided
     const stored = localStorage.getItem("use_client_side_api");
     if (stored !== null) return stored === "true";
-    return hasEnvKey;
+    return false;
   });
   const [clientApiKey, setClientApiKey] = useState<string>(() => {
-    return localStorage.getItem("client_gemini_api_key") || (import.meta.env.VITE_GEMINI_API_KEY as string) || "";
+    const envKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || "";
+    const stored = localStorage.getItem("client_gemini_api_key") || "";
+    return envKey || stored || "";
   });
 
   // Target date for generation (defaults to today)
